@@ -1,9 +1,10 @@
-# BgpEvpnVxlanOutDelay Agent
+# BgpEvpnVxlanOutDelay
 
-The purpose of this agent is to monitor MLAG reachability, alert if all BGP EVPN peers are down and disable all ESI 
-interfaces on the routers.
-Conversely when the Peers come back up the ESI interfaces are re-enabled.  This is triggered via inotify, monitoring 
-the logfile on the router for the MLAG Reload  changes.
+The purpose of this agent is to monitor MLAG relaod timers, along with MLAG enablement and disable all BGP EVPN peers if the reload
+rimers are acitve.  This is simulating, in effect, BGP out delay.
+
+When the reload timers expire the BGP peers are re-enabled.  This is triggered via inotify, monitoring 
+the logfile on the router for any BGP Agent and MLAG agent changes.
 
 daemon BgpEvpnVxlanOutDelay 
    exec /usr/local/bin/BgpEvpnVxlanOutDelay
@@ -69,7 +70,7 @@ The first step in doing so is to copy the BgpEvpnVxlanOutDelay script to the swi
 ```
 scp BgpEvpnVxlanOutDelay <user name>@<switch IP address>:/mnt/flash
 ```
-Next, BgpEvpnCoreMonitor must be configured to interact with Sysdb by dropping into bash on the switch and executing	
+Next, BgpEvpnVxlanOutDelay must be configured to interact with Sysdb by dropping into bash on the switch and executing	
 
 ```
 sudo cp /usr/lib/SysdbMountProfiles/EosSdkAll /usr/lib/SysdbMountProfiles/BgpEvpnVxlanOutDelay
@@ -82,6 +83,6 @@ Lastly, the BgpEvpnVxlanOutDelay daemon may be started using the conventional EO
 
 ```
 daemon BgpEvpnVxlanOutDelay
-exec /mnt/flash/BgpEvpnCoreMonitor
+exec /mnt/flash/BgpEvpnVxlanOutDelay
 no shut
 ```
