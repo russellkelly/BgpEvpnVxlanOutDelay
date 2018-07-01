@@ -1,0 +1,11 @@
+agentName:BgpEvpnVxlanOutDelay-%sliceId
+
+Include: EosSdk_agent.include
+Include: EosSdk_mlag.include
+
+# for mlag/status, Mlag::Status, r
+Include: MlagStatus-include
+
+# for interface support with EosSdk_IntfMgrHelper.include
+Include: AgentPlugin-IntfCollections-*
+
