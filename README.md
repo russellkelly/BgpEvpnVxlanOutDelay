@@ -6,10 +6,12 @@ rimers are acitve.  This is simulating, in effect, BGP out delay.
 When the reload timers expire the BGP peers are re-enabled.  This is triggered via inotify, monitoring 
 the logfile on the router for any BGP Agent and MLAG agent changes.
 
+```
 daemon BgpEvpnVxlanOutDelay 
    exec /usr/local/bin/BgpEvpnVxlanOutDelay
    no shut
    
+ ```
 This requires the EOS SDK extension installed if its < EOS 4.17.0 release.
 All new EOS releases include the SDK.
 
