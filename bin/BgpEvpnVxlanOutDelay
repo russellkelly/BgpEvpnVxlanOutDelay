@@ -205,7 +205,6 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
         BgpAgentStart = False    
         StateChange = False
         ReloadChange = False
-        BgpAgentStart = False
         while self.pos < stat(self.logfile)[ST_SIZE]:
             self.pos = self.f.tell()
             line = self.f.readline()
