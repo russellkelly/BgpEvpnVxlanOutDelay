@@ -57,21 +57,18 @@ reloadexpression = ".*MLAG-6-RELOAD_DELAY_ENDING: Mlag reload-delay period will 
 stateexpression = ".*MLAG-6-STATE.*"
 bgpagentstart = ".*AGENT-6-INITIALIZED: Agent 'Bgp' initialized.*"
 
+# Pick a logfile Action that only happens after reboot - use this to set time to zero to bring BGP
+# EVPN peers down.  Happens after this Agent start!
+
+switchrestart = ".*AGENT-6-INITIALIZED: Agent 'ReloadCauseAgent' initialized*"
+
 #****************************
 #GLOBAL VARIABLES -         *
 #****************************
 
+# Track Status Of Switch Reboot
 
-# Wait time to use when transitioning back to active MLAG.  Used in mlag_status_check()
-
-WAITTIME = 0.5
-
-# Manually configured BOOTDELAY in Seconds.  Gives more accurate EOS uptime,
-# removes HW boot time.  Need to find a better way to get this.
-# Maybe use 'logEosStarted: %EOS-6-STARTED: EOS started'
-# Used in get_elapsed_time()
-
-BOOTDELAY = 300
+SwitchRestart = False
 
 
 #***************************
@@ -147,20 +144,18 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
         self.inotify_fd = self.wm.get_fd()
         self.tracer.trace0("Watching inotify fd: %d" % self.inotify_fd)
         self.watch_readable(self.inotify_fd, True)
-
         
         # Now register the expression to match and get to the end of the logfile
         
         self.expression = expression
         self.stateexpression = stateexpression
         self.reloadexpression = reloadexpression
-        self.bgpagentstart = bgpagentstart        
+        self.bgpagentstart = bgpagentstart
+        self.switchrestart = switchrestart
         self.f = open(self.logfile,"r")
         file_len = stat(self.logfile)[ST_SIZE]
         self.f.seek(file_len)
         self.pos = self.f.tell()
-        
-        
         self.tracer.trace0("Python agent constructed")
         syslog.syslog("Initialization finishing")
 
@@ -173,10 +168,10 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
         self.agentMgr.status_set("MLAG Current Status:", "Unknown")
         self.agentMgr.status_set("MLAG Reload Delay MLAG (in seconds):", "Unknown")
         self.agentMgr.status_set("MLAG Reload Delay Non-MLAG (in seconds):", "Unknown")
-        self.agentMgr.status_set("BGP Enable MLAG Reload Delay:", "Unknown")
+        self.agentMgr.status_set("BGP EVPN Current Status:", "Enabled")
         
-        #Start our handler now - Set the initial status of the BGP Peers
-        self.ConfigureInitialBgpPeerStatus('False')
+        #Agent Initialized...now monitoring logfile.  Lets populate MLAG details, if running
+        self.get_mlag_reload_timers()
         
 
     def on_agent_enabled(self, enabled):
@@ -202,9 +197,12 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
 
 
     def tail(self):
-        BgpAgentStart = False    
+        
+        global SwitchRestart
+        
         StateChange = False
         ReloadChange = False
+        BgpAgentStart = False
         while self.pos < stat(self.logfile)[ST_SIZE]:
             self.pos = self.f.tell()
             line = self.f.readline()
@@ -216,6 +214,9 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
             else:
     
                 # Look for a matching line
+                if re.findall(self.switchrestart, line, re.I):
+                    SwitchRestart = True
+                    self.agentMgr.status_set("BGP EVPN Current Status:", "Inactive")
                 if re.findall(self.bgpagentstart, line, re.I):
                     BgpAgentStart = True
                 if re.findall(self.expression, line, re.I):
@@ -228,16 +229,31 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
                         pass
                 else:
                     pass
- 
         if StateChange:
             MlagStatus = self.mlag_status_check()
-        if BgpAgentStart:
-            self.ConfigureInitialBgpPeerStatus('True')
+        if BgpAgentStart and SwitchRestart and self.MlagMgr.enabled():
+            SwitchRestart = False
+            ElapsedSeconds = 0   
+            self.ConfigureInitialBgpPeerStatus('True', ElapsedSeconds)
         if ReloadChange:
             ElementsInString = self.ReloadString.split()
             TimeToWait = ElementsInString[-2]
             self.ReloadString = ""
             self.bgpevpn_config_change('BRINGUPBGPEVPN', int(TimeToWait))
+            
+
+
+    def ConfigureInitialBgpPeerStatus(self,BgpAgentIsUp,ElapsedSeconds):
+
+        #Let's check the System Boot time and configure the BGP EVPN Peer status appropriately
+
+        ReloadDelay,ReloadDelayNonMlag = self.get_mlag_reload_timers()
+        if ElapsedSeconds < ReloadDelay and ReloadDelayNonMlag:
+            if BgpAgentIsUp is 'True':
+                self.bgpevpn_config_change('BRINGDOWNBGPEVPN', 0)
+        else:
+            syslog.syslog("Bgp Agent is not up yet")
+            
 
 
 
@@ -267,9 +283,7 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
 
 
     def mlag_status_check(self):
-        
-        global WAITTIME
-        
+
         if self.MlagMgr.enabled():
             syslog.syslog("MLAG Enabled on this System: " +str(self.MlagMgr.state()))
             checkmlag = self.EapiMgr.run_show_cmd('show mlag detail')
@@ -279,8 +293,6 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
                 ReloadDelay = mlagstatus['reloadDelay']
                 ReloadDelayNonMlag = mlagstatus['reloadDelayNonMlag']
             while MlagState != 'active':
-                sleep (WAITTIME)
-                syslog.syslog("MLAG Enabled on this System But waiting for Active: " +str(self.MlagMgr.state()))
                 checkmlag = self.EapiMgr.run_show_cmd('show mlag detail')
                 if(checkmlag.success()):
                     mlagstatus = json.loads(checkmlag.responses()[0])
@@ -295,47 +307,7 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
         self.agentMgr.status_set("MLAG Current Status:", str(MlagState))
         self.agentMgr.status_set("MLAG Reload Delay MLAG (in seconds):", str(ReloadDelay))
         self.agentMgr.status_set("MLAG Reload Delay Non-MLAG (in seconds):", str(ReloadDelayNonMlag))
-        return ReloadDelay,ReloadDelayNonMlag
-        
-        
-        
-        
-    def ConfigureInitialBgpPeerStatus(self,BgpAgentUp):
 
-        #Let's check the System Boot time and set the initial BGP EVPN Peer status appropriately
-        
-        ReloadDelay,ReloadDelayNonMlag = self.get_mlag_reload_timers()
-        
-        showversion = self.EapiMgr.run_show_cmd('show version')
-        if(showversion.success()):
-            showversionresult = json.loads(showversion.responses()[0])
-            SystemBootTime = showversionresult["bootupTimestamp"]
-        else:
-            pass
-        
-        ElaspsedMinutes = self.get_elapsed_time(int(SystemBootTime))
-        
-        syslog.syslog("System Boot time: " +str(int(ElaspsedMinutes)))
-
-        if ElaspsedMinutes < ReloadDelay and ReloadDelayNonMlag:
-            if BgpAgentUp is 'True':
-                self.bgpevpn_config_change('BRINGDOWNBGPEVPN', 0)
-        else:
-            syslog.syslog("Missed Our Chance")
-            
-
-
-    def get_elapsed_time(self, SystemBootTime):
-        
-        global BOOTDELAY
-        
-        self.SystemBootTime = datetime.datetime.fromtimestamp(int(SystemBootTime))
-        CurrentTime = datetime.datetime.now()
-        ElapsedTime = CurrentTime - self.SystemBootTime
-        DurationInSeconds = ElapsedTime.total_seconds()
-        DurationInSeconds = DurationInSeconds - BOOTDELAY
-        return DurationInSeconds
-                    
     
     def bgpevpn_config_change(self, Status, TimeToWait):    
         try:
@@ -354,7 +326,7 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
                     applyconfig = self.EapiMgr.run_config_cmds([z for z in CommandListPeerDown])
                     if(applyconfig.success()):
                         syslog.syslog("Applied Configuration changes from CommandListPeerDown")
-                        self.agentMgr.status_set("BGP Enable MLAG Reload Delay:", "BGP Disabled. Waiting for Reload Delay To End...")
+                        self.agentMgr.status_set("BGP EVPN Current Status:", "BGP Disabled. Waiting for Reload Delay To End...")
                     else:
                         syslog.syslog(applyconfig.error_message())
                         syslog.syslog("Unable to apply configuration changes from CommandListPeerDown")
@@ -363,13 +335,13 @@ class BgpEvpnVxlanOutDelayAgent(eossdk.AgentHandler, eossdk.FdHandler, eossdk.Ml
             
             elif Status == 'BRINGUPBGPEVPN':
                 syslog.syslog("We're good to bring these peers up")
-                self.agentMgr.status_set("BGP Enable MLAG Reload Delay:", "Bringing up")
+                self.agentMgr.status_set("BGP EVPN Current Status:", "Bringing up")
                 sleep(TimeToWait)            
                 try:
                     applyconfig = self.EapiMgr.run_config_cmds([z for z in CommandListPeerUp])
                     if(applyconfig.success()):
                         syslog.syslog("Applied Configuration changes from CommandListPeerUp")
-                        self.agentMgr.status_set("BGP Enable MLAG Reload Delay:", "Delay Over. Enabled")
+                        self.agentMgr.status_set("BGP EVPN Current Status:", "Enabled")
                     else:
                         syslog.syslog("Unable to apply configuration changes from CommandListPeerUp")
                 except:
@@ -427,4 +399,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
