@@ -1,9 +1,10 @@
 # BgpEvpnVxlanOutDelay
 
-The purpose of this agent is to monitor MLAG relaod timers, along with MLAG enablement and disable all BGP EVPN peers if the reload timers are active.  This is simulating, in effect, BGP out delay.
+The purpose of this agent is to monitor MLAG reload timers, along with MLAG enablement in general, and disable all BGP EVPN peers if the reload timers are active.  Thus effectively simulating BGP out delay.
 
-When the reload timers expire the BGP peers are re-enabled.  This is triggered via inotify, monitoring 
-the logfile on the router for any BGP Agent and MLAG agent changes.
+When the MLAG reload timers expire the BGP peers are re-enabled.  This allows for all MLAG and MLAG/non-MLAG links to stabilize before bringing the BGP EVPN peers up.  Note. IPv4 BGP peers are up, so connectivity can be verified.
+
+These enablement/disablement changes are triggered via inotify, which is monitoring the logfile on the router for any BGP Agent and MLAG agent changes.
 
 
 ```
